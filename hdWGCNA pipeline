@@ -1,0 +1,432 @@
+#This is a general pipeline for high dimensionality WGCNA analysis of single cell/single nuclei RNA-sequencing data. For each individual cell type, the Seurat object is subsetted. Therefore for however many cell types of interest you will have a corresponding number of Seurat Objects. 
+
+#source link: https://smorabit.github.io/hdWGCNA/
+
+# single-cell analysis package
+library(Seurat)
+
+# plotting and data science packages
+library(tidyverse)
+library(cowplot)
+library(patchwork)
+library(ggplot2)
+library(dplyr)
+library(devtools)
+library(ggrepel)
+
+# co-expression network analysis packages:
+install.packages("BiocManager")
+BiocManager::install("WGCNA") 
+library(WGCNA)
+devtools::install_github('smorabit/hdWGCNA', ref='dev')
+library(hdWGCNA)
+
+# using the cowplot theme for ggplot
+theme_set(theme_cowplot())
+
+# load the snRNA-seq dataset
+pfc_human <- readRDS('pfc_human_downstreamanalysis.rds')
+
+#Create aggregate cell type labels and ensure all celltype cluster labels are correct
+new.cluster.ids<-c("Excit", "Oligo", "Neu", "Oligo", "Inhib", "Ast", "OPC", "Inhib", "MG", "Excit", "Inhib", "Endo", "Excit", "Endo", "Inhib", "Ast", "Oligo", "MG", "Mix", "Endo", "Endo", "Excit", "Excit", "Excit", "Inhib", "Mix", "Oligo", "OPC", "Oligo","Inhib")
+names(new.cluster.ids) <- levels(pfc_human)
+pfc_human <- RenameIdents(pfc_human, new.cluster.ids)
+DimPlot(pfc_human, reduction = "umap", label = TRUE)
+
+
+#Add cell_type column to metadata
+pfc_human@meta.data$cell_type<-Idents(pfc_human)
+
+#Prep Seurat object for WCGNA
+seurat_obj<-pfc_human
+
+#Visualize before WCGNA
+p <- DimPlot(seurat_obj, group.by='cell_type', label=TRUE) +
+  ggtitle('dlPFC AUD and Control Individuals') + NoLegend()
+
+p
+
+#Subset Seurat object. This is example is subsetting for microglia. You will need to subset all cell types separately.
+seurat_obj<-subset(x=pfc_human, idents=c("Ast"))
+
+#Before running hdWGCNA, we first have to set up the Seurat object. Most of the information computed by hdWGCNA is stored in the Seurat object’s @misc slot. A single Seurat object can hold multiple hdWGCNA experiments, for example representing different cell types in the same single-cell dataset. Notably, since we consider hdWGCNA to be a downstream data analysis step, we do not support subsetting the Seurat object after SetupForWGCNA has been run.
+#Here we will set up the Seurat object using the SetupForWGCNA function, specifying the name of the hdWGNCA experiment. This function also selects the genes that will be used for WGCNA. The user can select genes using three different approaches using the gene_select parameter:
+
+#variable: use the genes stored in the Seurat object’s VariableFeatures.
+#fraction: use genes that are expressed in a certain fraction of cells for in the whole dataset or in each group of cells, specified by group.by.
+#custom: use genes that are specified in a custom list.
+
+seurat_obj <- SetupForWGCNA(
+  seurat_obj,
+  gene_select = "fraction", # the gene selection approach
+  fraction = 0.05, # fraction of cells that a gene needs to be expressed in order to be included
+  wgcna_name = "Astrocyte analysis" # the name of the hdWGCNA experiment
+)
+
+#After we have set up our Seurat object, the first step in running the hdWGCNA pipeine in hdWGCNA is to construct metacells from the single-cell dataset. Briefly, metacells are aggregates of small groups of similar cells originating from the same biological sample of origin. The k-Nearest Neighbors (KNN) algorithm is used to identify groups of similar cells to aggregate, and then the average or summed expression of these cells is computed, thus yielding a metacell gene expression matrix. The sparsity of the metacell expression matrix is considerably reduced when compared to the original expression matrix, and therefore it is preferable to use. We were originally motivated to use metacells in place of the original single cells because correlation network approaches such as WGCNA are sensitive to data sparsity. Furthermore, single-cell epigenomic approaches, such as Cicero, employ a similar metacell aggregation approach prior to constructing co-accessibility networks.
+
+#hdWGCNA includes a function MetacellsByGroups to construct metacell expression matrices given a single-cell dataset. This function constructs a new Seurat object for the metacell dataset which is stored internally in the hdWGCNA experiment. The group.by parameter determines which groups metacells will be constructed in. We only want to construct metacells from cells that came from the same biological sample of origin, so it is critical to pass that information to hdWGCNA via the group.by parameter. Additionally, we usually construct metacells for each cell type separately. Thus, in this example, we are grouping by Sample and cell_type to achieve the desired result.
+
+
+# construct metacells  in each group
+seurat_obj <- MetacellsByGroups(
+  seurat_obj = seurat_obj,
+  group.by = c("Classification", "Sample_number", "PFC_snRNAseq_site", "cell_type"), # specify the columns in seurat_obj@meta.data to group by
+  k = 25, # nearest-neighbors parameter
+  max_shared = 10, # maximum number of shared cells between two metacells
+  ident.group = 'cell_type' # set the Idents of the metacell seurat object
+)
+
+# normalize metacell expression matrix:
+seurat_obj <- NormalizeMetacells(seurat_obj)
+
+#Since we store the Metacell expression information as its own Seurat object, we can run Seurat functions on the metacell data. We can get the metacell object from the hdWGCNA experiment using GetMetacellObject.
+
+metacell_obj <- GetMetacellObject(seurat_obj)
+
+#Additionally, we have included a few wrapper functions to apply the Seurat workflow to the metacell object within the hdWGCNA experiment. Here we apply these wrapper functions to process the metacell object and visualize the aggregated expression profiles in two dimensions with UMAP.
+
+seurat_obj <- NormalizeMetacells(seurat_obj)
+seurat_obj <- ScaleMetacells(seurat_obj, features=VariableFeatures(seurat_obj))
+seurat_obj <- RunPCAMetacells(seurat_obj, features=VariableFeatures(seurat_obj))
+seurat_obj <- RunHarmonyMetacells(seurat_obj, group.by.vars='PFC_snRNAseq_site')
+seurat_obj <- RunUMAPMetacells(seurat_obj, reduction='harmony', dims=1:20)
+
+p1 <- DimPlotMetacells(seurat_obj, group.by='cell_type')  + ggtitle("Cell Type")
+p2 <- DimPlotMetacells(seurat_obj, group.by='Sample_number') + ggtitle("Sample")
+
+p1 | p2
+
+#Here we specify the expression matrix that we will use for network analysis. 
+
+seurat_obj <- SetDatExpr(
+  seurat_obj,
+  group_name = c("Ast"), # the name of the group of interest in the group.by column, this is the astrocyte clusters to start
+  group.by='cell_type', # the metadata column containing the cell type info. This same column should have also been used in MetacellsByGroups
+  assay = 'RNA', # using RNA assay
+  slot = 'data' # using normalized data
+)
+
+# Test different soft powers:
+seurat_obj <- TestSoftPowers(
+  seurat_obj,
+  networkType = 'signed' # you can also use "unsigned" or "signed hybrid"
+)
+
+# plot the results:
+plot_list <- PlotSoftPowers(seurat_obj)
+
+# assemble with patchwork
+wrap_plots(plot_list, ncol=2)
+
+#The general guidance for WGCNA and hdWGCNA is to pick the lowest soft power threshold that has a Scale Free Topology Model Fit greater than or equal to 0.8. Later on, the ConstructNetwork will automatically select the soft power threshold if the user does not provide one.
+
+power_table <- GetPowerTable(seurat_obj)
+head(power_table)
+
+# construct co-expression network:
+seurat_obj <- ConstructNetwork(
+  seurat_obj, soft_power=7,
+  setDatExpr=FALSE,
+  tom_name = 'Astrocytes' # name of the topoligical overlap matrix written to disk
+)
+
+#Plot dendrogram for modules
+PlotDendrogram(seurat_obj, main='Astrocyte hdWGCNA Dendrogram')
+
+#Get Topological Overlap Matrix
+TOM <- GetTOM(seurat_obj)
+
+# need to run ScaleData first or else harmony throws an error:
+seurat_obj <- ScaleData(seurat_obj, features=VariableFeatures(seurat_obj))
+
+# compute all MEs in the full single-cell dataset
+seurat_obj <- ModuleEigengenes(
+ seurat_obj,
+ group.by.vars="Classification"
+)
+
+# compute eigengene-based connectivity (kME):
+seurat_obj <- ModuleConnectivity(
+  seurat_obj,
+  group.by = 'cell_type', group_name = 'Ast'
+)
+
+# rename the modules
+seurat_obj <- ResetModuleNames(
+  seurat_obj,
+  new_name = "Ast-M"
+)
+
+# plot genes ranked by kME for each module
+p <- PlotKMEs(seurat_obj, ncol=5)
+
+p
+
+# get the module assignment table:
+modules <- GetModules(seurat_obj)
+
+# show the first 6 columns:
+head(modules[,1:6])
+
+
+# get hub genes
+hub_df <- GetHubGenes(seurat_obj, n_hubs = 10)
+
+head(hub_df)
+
+
+#This wraps up the critical analysis steps for hdWGCNA, so remember to save your output.
+
+saveRDS(seurat_obj, file='hdWGCNA_object.rds')
+
+
+# compute gene scoring for the top 25 hub genes by kME for each module
+# with Seurat method
+seurat_obj <- ModuleExprScore(
+  seurat_obj,
+  n_genes = 25,
+  method='Seurat'
+)
+
+# compute gene scoring for the top 25 hub genes by kME for each module
+# with UCell method
+library(remotes)
+remotes::install_github("carmonalab/UCell", ref="v1.3")
+library(UCell)
+
+seurat_obj <- ModuleExprScore(
+  seurat_obj,
+  n_genes = 25,
+  method='UCell'
+)
+
+# make a featureplot of hMEs for each module
+plot_list <- ModuleFeaturePlot(
+  seurat_obj,
+  features='hMEs', # plot the hMEs
+  order=TRUE # order so the points with highest hMEs are on top
+)
+
+# stitch together with patchwork
+wrap_plots(plot_list, ncol=6)
+
+
+#We can also plot the hub gene signature score using the same function:
+
+# make a featureplot of hub scores for each module
+plot_list <- ModuleFeaturePlot(
+  seurat_obj,
+  features='scores', # plot the hub gene scores
+  order='shuffle', # order so cells are shuffled
+  ucell = TRUE # depending on Seurat vs UCell for gene scoring
+)
+
+# stitch together with patchwork
+wrap_plots(plot_list, ncol=6)
+
+#hdWGCNA includes the ModuleCorrelogram function to visualize the correlation between each module based on their hMEs, MEs, or hub gene scores using the R package corrplot.
+
+# plot module correlagram
+ModuleCorrelogram(seurat_obj)
+
+#The base Seurat plotting functions are also great for visualizing hdWGCNA outputs. Here we demonstrate plotting hMEs using DotPlot and VlnPlot. The key to using Seurat’s plotting functions to visualize the hdWGCNA data is to add it into the Seurat object’s @meta.data slot:
+
+# get hMEs from seurat object
+MEs <- GetMEs(seurat_obj, harmonized=TRUE)
+mods <- colnames(MEs); mods <- mods[mods != 'grey']
+
+# add hMEs to Seurat meta-data:
+seurat_obj@meta.data <- cbind(seurat_obj@meta.data, MEs)
+
+#Now we can easily use Seurat’s DotPlot function:
+
+# plot with Seurat's DotPlot function
+p <- DotPlot(seurat_obj, features=mods, group.by = 'cell_type')
+
+# flip the x/y axes, rotate the axis labels, and change color scheme:
+p <- p +
+  coord_flip() +
+  RotatedAxis() +
+  scale_color_gradient2(high='red', mid='grey95', low='blue')
+
+# plot output
+p
+
+
+# Plot Turquoise hME using Seurat VlnPlot function
+p <- VlnPlot(
+  seurat_obj,
+  features = 'turquoise',
+  group.by = 'cell_type',
+  pt.size = 0 # don't show actual data points
+)
+
+# add box-and-whisker plots on top:
+p <- p + geom_boxplot(width=.25, fill='white')
+
+# change axis labels and remove legend:
+p <- p + xlab('') + ylab('hME') + NoLegend()
+
+# plot output
+p
+
+#Create a boxplot with p-value and ANOVA statistics to determine if there is differences between conditions in modules 
+install.packages("ggpubr")
+library(ggpubr)
+library(ggrepel)
+
+key<-seurat_obj@meta.data[,5:17]
+#this will include barcodes to cbind with MEs and relevant meta data columns of interest like DSMV and Classification 
+
+key<- cbind(key, MEs)
+
+#calculate P-values 
+compare_means(`Ast-M1` ~ DSMV, data = key, ref.group = "Control", method = "t.test")
+ 
+#Plot them 
+ggboxplot(key, x = "DSMV", y = "`Ast-M1`", color = "DSMV", palette = "jco")+ stat_compare_means(method = "anova", label.y = 50)+ stat_compare_means(label = "p.signif", method = "t.test", ref.group = "Control")       
+ 
+#Now go iteratively through with different x values like Classification and all modules for your y (e.g. Ast-M2). Save as PDF. 
+#You may need to reorder levels of meta data factors in the order you want them plotted. See downstream analysis for example code in Correlation Heatmap section.
+#Tutorial for ggpubr here: http://www.sthda.com/english/articles/24-ggpubr-publication-ready-plots/76-add-p-values-and-significance-levels-to-ggplots/
+ 
+ 
+
+#Before we visualize anything, we first need to load the data and the required libraries.
+
+# single-cell analysis package
+library(Seurat)
+
+# plotting and data science packages
+library(tidyverse)
+library(cowplot)
+library(patchwork)
+
+# co-expression network analysis packages:
+library(WGCNA)
+library(hdWGCNA)
+
+# network analysis & visualization package:
+library(igraph)
+
+# using the cowplot theme for ggplot
+theme_set(theme_cowplot())
+
+#INDIVIDUAL MODULE NETWORK PLOTS 
+ModuleNetworkPlot(seurat_obj)
+
+#This will create pdfs for each module in a separate folder in your working directory, labeled "ModulePlots"
+
+#COMBINED HUB GENE NETWORKS PLOTS
+#Here we will make a network plot combining all of the modules together using the HubGeneNetworkPlot function. This function takes the top n hub genes as specified by the user, and other randomly selected genes, and constructs a joint network using the force-directed graph drawing algorithm. For visual clarity, the number of edges in the network can be downsampled using the edge_prop parameter. In the following example, we visualize the top 3 hub genes and 6 other genes per module.
+
+# hubgene network
+HubGeneNetworkPlot(
+  seurat_obj,
+  n_hubs = 3, n_other=5,
+  edge_prop = 0.75,
+  mods = 'all'
+)
+
+#As in the previous network plot, each node represents a gene and each edge represents a co-expression relationship. In this network, we color intramodular edges with the module’s color, and intermodular edges gray. The opacity of edges in this network is scaled by the strength of the co-expression relationship. Additional network layout settings can be passed to the layout_with_fr function in igraph. The user can also specify return_graph = TRUE to return the igraph object to plot using their own custom code.
+
+g <- HubGeneNetworkPlot(seurat_obj,  return_graph=TRUE)
+
+#Differential module eigengene analysis (DME) analysis 
+group1 <- seurat_obj@meta.data %>% subset(cell_type == 'Ast' & Classification == 'Control') %>% rownames
+group2 <- seurat_obj@meta.data %>% subset(cell_type == 'Ast' & Classification != 'Control') %>% rownames
+
+head(group1)
+
+DMEs <- FindDMEs(
+  seurat_obj,
+  barcodes1 = group1,
+  barcodes2 = group2,
+  test.use='wilcox',
+)
+
+head(DMEs)
+
+PlotDMEsVolcano(
+  seurat_obj,
+  DMEs,
+ )
+ 
+ #One-versus-all DME analysis
+ group.by = 'cell_type'
+
+DMEs_all <- FindAllDMEs(
+  seurat_obj,
+  group.by = 'cell_type',
+  )
+
+head(DMEs_all)
+
+p <- PlotDMEsVolcano(
+  seurat_obj,
+  DMEs_all,
+  plot_labels=FALSE,
+  show_cutoff=FALSE
+)
+
+# facet wrap by each cell type
+p + facet_wrap(~group, ncol=3)
+
+
+#Correlation Heatmap 
+seurat_obj$Sex <- as.factor(seurat_obj$Sex)
+seurat_obj$Liver_class <- as.factor(seurat_obj$Liver_class)
+seurat_obj$Smoking_frequency <- as.factor(seurat_obj$Smoking_frequency)
+seurat_obj$DSMV <- as.factor(seurat_obj$DSMV)
+seurat_obj$Classification <- as.factor(seurat_obj$Classification)
+
+cur_traits <- c('Sex', "Liver_class", "Classification", "Smoking_frequency", "DSMV", "alcohol_intake_gmsperday")
+
+#Warning messages:
+1: In ModuleTraitCorrelation(seurat_obj, traits = cur_traits, group.by = "cell_type") :
+  Trait Sex is a factor with levels Female, Male. Levels will be converted to numeric IN THIS ORDER for the correlation, is this the expected order?
+2: In ModuleTraitCorrelation(seurat_obj, traits = cur_traits, group.by = "cell_type") :
+  Trait Liver_class is a factor with levels Cirrhosis, Congestion, Mild Steatosis, Mild_Steatosis, Normal, Steatosis, unknown. Levels will be converted to numeric IN THIS ORDER for the correlation, is this the expected order?
+3: In ModuleTraitCorrelation(seurat_obj, traits = cur_traits, group.by = "cell_type") :
+  Trait Classification is a factor with levels AUD, Control. Levels will be converted to numeric IN THIS ORDER for the correlation, is this the expected order?
+4: In ModuleTraitCorrelation(seurat_obj, traits = cur_traits, group.by = "cell_type") :
+  Trait Smoking_frequency is a factor with levels 01 - Everyday/7days per week, 11 - Never  in the past year, 12 - Never in my life, 99 - Not reported. Levels will be converted to numeric IN THIS ORDER for the correlation, is this the expected order?
+5: In ModuleTraitCorrelation(seurat_obj, traits = cur_traits, group.by = "cell_type") :
+  Trait DSMV is a factor with levels Control, Mild, Moderate, Severe. Levels will be converted to numeric IN THIS ORDER for the correlation, is this the expected order?
+
+#Reorder levels
+seurat_obj$Sex <- factor(seurat_obj$Sex, levels = c("Male", "Female"))
+seurat_obj$DSMV <- factor(seurat_obj$DSMV, levels = c("Severe", "Moderate", "Mild", "Control"))
+seurat_obj$Liver_class <- factor(seurat_obj$Liver_class, levels = c("Cirrhosis", "Steatosis","Mild Steatosis", "Mild_Steatosis", "Congestion", "Normal", "unknown"))
+
+seurat_obj <- ModuleTraitCorrelation(
+    seurat_obj,
+    traits = cur_traits,    
+    group.by='cell_type'
+)
+
+# get the mt-correlation results
+mt_cor <- GetModuleTraitCorrelation(seurat_obj)
+
+names(mt_cor)
+
+names(mt_cor$cor)
+
+#Check the correlations for your cell type of interest 
+head(mt_cor$cor$Ast[,1:5])
+
+#Plot heatmap
+PlotModuleTraitCorrelation(
+  seurat_obj,
+  label = 'fdr',
+  label_symbol = 'stars',
+  text_size = 2,
+  text_digits = 2,
+  text_color = 'white',
+  high_color = 'red',
+  mid_color = 'white',
+  low_color = 'blue',
+  plot_max = 0.2,
+  combine=TRUE
+)

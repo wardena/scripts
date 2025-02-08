@@ -1,0 +1,28 @@
+#Create a MAGMA analysis conda environment if necessary after installation
+conda create --name magma_analysis python=3.8
+conda activate magma_analysis
+magma --version
+#should say MAGMA version: v1.10 (custom)
+#Ensure MAGMA has been added to your $PATH
+
+#Files required for analysis
+#(1) "Download" and "unzip" the gene locations file from the MAGMA website for human genome build GRCh37 into ./tutorial/input/annotations/: https://ctg.cncr.nl/software/MAGMA/aux_files/NCBI37.3.zip
+#(2) "Download" and "unzip" the relevant set of binary files (note, this tutorial concerns a GWAS study performed in a European population) into ./tutorial/input/binaries/: https://ctg.cncr.nl/software/MAGMA/ref_data/g1000_eur.zip
+#(3) "Download" and "unzip" Million Veteran Program AUDIT and Alcohol Dependence GWAS data from hhttps://pubmed.ncbi.nlm.nih.gov/37147289/
+#(4) A two column txt file of your cluster ids and geneIDS/entrez ids. All geneIDS/entrez ids must match the other input files. Matching formatting is the most critical part of this set up. 
+
+#Step 1: SNP Gene Annotation 
+
+magma --annotate window=100,20 --gene-loc NCBI37.3.gene.loc --snp-loc g1000_eur.bim --out build
+
+#Step 2: Gene analysis
+magma --bfile /path/to/file/g1000_eur/g1000_eur --gene-annot /path/to/file/build.genes.annot --pval /path/to/file/output.txt N=318694 --out output
+
+#Step 3: Gene Set Analysis (this is where your personal data comes in) 
+#Input file will be (1) aggregate DEGs, (2) individual cell type cluster DEGs, (3) hdWGCNA module genes
+
+magma --gene-results /path/to/file/output.genes.raw --set-annot /path/to/file/input_file.txt gene-col=2 set-col=1 --out output_gene_set
+
+
+
+

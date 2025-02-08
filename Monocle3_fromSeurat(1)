@@ -1,0 +1,115 @@
+if (!requireNamespace("BiocManager", quietly = TRUE))
+install.packages("BiocManager")
+BiocManager::install(version = "3.14")
+
+BiocManager::install(c('BiocGenerics', 'DelayedArray', 'DelayedMatrixStats',
+                       'limma', 'lme4', 'S4Vectors', 'SingleCellExperiment',
+                       'SummarizedExperiment', 'batchelor', 'Matrix.utils',
+                       'HDF5Array', 'terra', 'ggrastr')
+
+
+#If you wish to install the develop branch of monocle3, execute code below. This was necessary since I was coming from a Seurat object. 
+library(devtools)
+devtools::install_github('cole-trapnell-lab/monocle3', ref="develop")
+library(monocle3)
+library(Seurat)
+library(SeuratWrappers)
+library(ggplot2)
+library(SeuratObject)
+library(SeuratData)
+
+##making the cell data obejct from a Seurat object 
+##Load your Seurat object with the cell types integrated into the Seurat metadata along with the other information you want to carry forward. The Seurat Object in this case is called 'pfc_human'
+
+gene_annotation <- as.data.frame(rownames(pfc_human@reductions[["pca"]]@feature.loadings),
+                                 row.names = rownames(pfc_human@reductions[["pca"]]@feature.loadings))
+colnames(gene_annotation) <- "gene_short_name"
+
+colnames(pfc_human@meta.data)
+
+#Select the columns you want, in my case I wanted barcode, AUD Classification, and cell type cluster identification information 
+
+cell_metadata<-pfc_human@metadata[,c(5,14,53)]
+View(cell_metadata)
+
+##Build your count matrix
+New_matrix <- pfc_human@assays[["RNA"]]@counts
+New_matrix <- New_matrix[rownames(pfc_human@reductions[["pca"]]@feature.loadings), ]
+expression_matrix <- New_matrix
+
+## I used this Seurat Object issue fix(https://github.com/satijalab/seurat-wrappers/issues/119) see paulitikka comment from August 15, 2022, because without it I got this error (Error in cds_from_seurat@preprocess_aux$gene_loadings <- try@reductions[["pca"]]@feature.loadings : 
+  no slot of name "preprocess_aux" for this object of class "cell_data_set") 
+  
+## If you want the original monocle3 seurat workflow go here: (https://github.com/satijalab/seurat/issues/2833), see Viscott comment on May 24, 2022
+
+### Construct the basic cds object:
+cds_from_edt3=c() 
+cds_from_edt3 <- new_cell_data_set(expression_matrix,cell_metadata = cell_metadata,gene_metadata = gene_annotation) 
+
+## Construct and assign the made up partition:
+recreate.partition <- c(rep(1, length(cds_from_edt3@colData@rownames)))
+names(recreate.partition) <- cds_from_edt3@colData@rownames
+recreate.partition <- as.factor(recreate.partition)
+
+## https://www.singlecellcourse.org/ Assign the cluster info, the number of clusters effect the trajectory.
+cds_from_edt3@clusters@listData[["UMAP"]][["partitions"]] <- recreate.partition# plot_cell_trajectory(cds,color_by = "1") +scale_color_manual(values = cell_type_color) 
+list_cluster <- pfc_human@ meta.data[[sprintf("seurat_clusters")]]
+names(list_cluster) <- pfc_human@assays[["RNA"]]@ data@Dimnames[[2]]
+
+## Could be a space-holder, but essentially fills out louvain parameters
+cds_from_edt3@clusters@listData[["UMAP"]][["clusters"]] <- list_cluster
+
+# Assign UMAP coordinate
+cds_from_edt3@clusters@listData[["UMAP"]][["louvain_res"]] <- "NA"
+
+#So this is different, and found here: cole-trapnell-lab/monocle-release#388
+cds_from_edt3@int_colData@listData$reducedDims$UMAP = pfc_human@reductions[["umap"]]@cell.embeddings;
+
+### Assign feature loading for downstream module analysis
+cds_from_edt3@reduce_dim_aux$gene_loadings <- pfc_human@reductions[["pca"]]@feature.loadings
+
+##Do Pseudotime 
+cds_from_edt3 <- learn_graph(cds_from_edt3, use_partition = FALSE)
+
+#choose node or nodes in shiny pop out window
+cds_from_edt3 <- order_cells(cds_from_edt3)
+
+#Graphs
+plot_cells(cds= cds_from_edt3,color_cells_by = "cell_type", show_trajectory_graph = TRUE,label_cell_groups = TRUE, labels_per_group = TRUE, label_leaves = FALSE, label_branch_points = FALSE, label_roots = FALSE, group_label_size = 5)
+
+plot_cells(cds= cds_from_edt3,color_cells_by = "Classification",show_trajectory_graph = TRUE,label_cell_groups = TRUE, labels_per_group = TRUE, label_leaves = FALSE, label_branch_points = FALSE, label_roots = FALSE, group_label_size = 5)
+
+plot_cells(cds= cds_from_edt3,color_cells_by = "pseudotime",show_trajectory_graph = TRUE,label_cell_groups = TRUE, labels_per_group = TRUE, label_leaves = FALSE, label_branch_points = FALSE, label_roots = FALSE, group_label_size = 5)
+
+
+##Order by pseudotime
+cds_from_edt3$monocle3_pseudotime<-pseudotime(cds_from_edt3)
+colData(cds_from_edt3)
+data.pseudo<-as.data.frame(colData(cds_from_edt3))
+
+## Boxplots 
+
+ggplot(data.pseudo, aes(monocle3_pseudotime, cell_type, fill=cell_type))+geom_boxplot()
+
+##Reordered by pseudotime boxplot
+ggplot(data.pseudo, aes(monocle3_pseudotime, reorder(cell_type, monocle3_pseudotime, median), fill=cell_type))+geom_boxplot()
+
+##Split by Classification
+ggplot(data.pseudo, aes(monocle3_pseudotime, reorder(cell_type, monocle3_pseudotime, median)))+geom_boxplot(aes(fill=Classification))
+
+##Finding genes that change as as function of pseudotime
+deg<-graph_test(cds_from_edt3, neighbor_graph='principal_graph', cores=4)
+
+deg %>%
+  arrange(q_value) %>%
+  filter(status == 'OK') %>%
+  head()
+
+#Plot some differentially expressed genes
+FeaturePlot(pfc_human, features=c('MEF2C', 'STMN3'))
+
+##visualize pseudotime in seurat
+pfc_human$pseudotime<-pseudotime(cds_from_edt3)
+FeaturePlot(pfc_human, features='pseudotime')
+
+

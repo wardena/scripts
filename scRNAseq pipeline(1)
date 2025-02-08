@@ -1,0 +1,230 @@
+##install necessary packages for analysis
+library(Seurat)
+library(SeuratObject)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(harmony)
+
+##Load processed data (after integration from GEO processed and raw files)
+pfc_human<-readRDS("prefiltering_73_pfc_samps_with_Ensembl_IDs.rds")
+
+#Integrate metadata into object, this data is included in GEO submission metadata.
+metadata <- read.csv("~/clinical_metadata.csv")
+
+#Extract metadata & Add to dataframe
+meta_pfc<-pfc_human@meta.data
+meta_pfc$barcode<-rownames(meta_pfc)
+meta_pfc_merged<-merge(meta_pfc,metadata,by="Sample_number")
+rownames(meta_pfc_merged)<-meta_pfc_merged$barcode
+
+pfc_human<- AddMetaData(
+  object = pfc_human,
+  metadata =meta_pfc_merged)
+View(pfc_human@meta.data)
+
+
+#Investigate percentage of mitochondrial and ribosomal contaminations and added them to metadata
+pfc_human[["percent.mt"]] <- PercentageFeatureSet(pfc_human, pattern = "^MT-")
+pfc_human[["percent.rb"]] <- PercentageFeatureSet(pfc_human, pattern = "^RP[SL]")
+View(pfc_human@meta.data)
+summary(pfc_human@meta.data$percent.mt)
+summary(pfc_human@meta.data$percent.rb)
+
+# Visualize QC metrics 
+VlnPlot(pfc_human, features = c("nFeature_RNA", "nCount_RNA", "percent.mt", "percent.rb"), ncol = 4,pt.size= 0)
+plot1 <- FeatureScatter(pfc_human, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(pfc_human, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot2
+plot1 + plot2
+boxplot(percent.mt ~ Classification, data =pfc_human@meta.data)
+boxplot(percent.mt ~ Sample_number, data =pfc_human@meta.data)
+
+#There is sample variation in the QC metrics, each type of QC was investigated and sepeartely analyzed as an exported table
+
+mit_reads_summary_by_sample<-pfc_human@meta.data%>% # Summary by group using dplyr
+  group_by(Sample_number) %>% 
+  summarize(min = min(percent.mt),
+            q1 = quantile(percent.mt, 0.25),
+            median = median(percent.mt),
+            mean = mean(percent.mt),
+            q3 = quantile(percent.mt, 0.75),
+            max = max(percent.mt))
+mit_reads_summary_by_sample<-merge(mit_reads_summary_by_sample,metadata,by="Sample_number")
+write.csv(mit_reads_summary_by_sample,file="summary_mitochondrial_percentage_by_sample.csv")
+
+rb_reads_summary_by_sample<-pfc_human@meta.data%>% # Summary by group using dplyr
+  group_by(Sample_number) %>% 
+  summarize(min = min(percent.rb),
+            q1 = quantile(percent.rb, 0.25),
+            median = median(percent.rb),
+            mean = mean(percent.rb),
+            q3 = quantile(percent.rb, 0.75),
+            max = max(percent.rb))
+rb_reads_summary_by_sample<-merge(rb_reads_summary_by_sample,metadata,by="Sample_number")
+write.csv(rb_reads_summary_by_sample,file="summary_ribosomal_percentage_by_sample.csv")
+
+RNA_reads_summary_by_sample<-pfc_human@meta.data%>% # Summary by group using dplyr
+  group_by(Sample_number) %>% 
+  summarize(min = min(nCount_RNA),
+            q1 = quantile(nCount_RNA, 0.25),
+            median = median(nCount_RNA),
+            mean = mean(nCount_RNA),
+            q3 = quantile(nCount_RNA, 0.75),
+            max = max(nCount_RNA))
+RNA_reads_summary_by_sample<-merge(RNA_reads_summary_by_sample,metadata,by="Sample_number")
+write.csv(RNA_reads_summary_by_sample,file="summary_nRNA_count_by_sample.csv")
+
+nFeature_summary_by_sample<-pfc_human@meta.data%>% # Summary by group using dplyr
+  group_by(Sample_number) %>% 
+  summarize(min = min(nFeature_RNA),
+            q1 = quantile(nFeature_RNA, 0.25),
+            median = median(nFeature_RNA),
+            mean = mean(nFeature_RNA),
+            q3 = quantile(nFeature_RNA, 0.75),
+            max = max(nFeature_RNA))
+nFeature_summary_by_sample<-merge(nFeature_summary_by_sample,metadata,by="Sample_number")
+write.csv(nFeature_summary_by_sample,file="summary_nFeature_count_by_sample.csv")
+
+#Regression models to identify covariates of interest in data distribution. 
+
+mit_model<-glm(median~ `PFC_snRNA-seq_site`+Age+Sex+PMI+Classification,data=mit_reads_summary_by_sample)
+summary(mit_model)
+
+RNA_model<-glm(median~ `PFC_snRNA-seq_site`+Age+Sex+PMI+Classification,data=RNA_reads_summary_by_sample)
+summary(RNA_model)
+
+nFeature_model<-glm(median~ `PFC_snRNA-seq_site`+Age+Sex+PMI+Classification,data=nFeature_summary_by_sample)
+summary(nFeature_model)
+
+
+#Filtering parameters used for downstream analysis based on QC distrubtions above
+pfc_human <- subset(pfc_human, subset = nFeature_RNA > 200 & nFeature_RNA < 3200 & percent.mt < 20)
+VlnPlot(pfc_human, features = c("nFeature_RNA", "nCount_RNA", "percent.mt", "percent.rb"), ncol = 4,pt.size = 0)
+VlnPlot(pfc_human, features = c("nFeature_RNA", "nCount_RNA", "percent.mt", "percent.rb"), ncol = 4,pt.size = 0.01)
+
+
+#Normalize the data
+pfc_human <- NormalizeData(pfc_human, normalization.method = "LogNormalize", scale.factor = 10000)
+#Identification of highly variable genes
+pfc_human <- FindVariableFeatures(pfc_human, selection.method = "vst", nfeatures = 2000)
+
+# Identify the 10 most highly variable genes
+top10 <- head(VariableFeatures(pfc_human), 10)
+# [1] "NPY"      "FLT1"     "FABP4"    "HBB"      "SERPINE1" "HBA2"     "RELN"     "EMP1"    
+#[9] "ATP10A"   "HERC2P3"
+
+# plot variable features with and without labels
+plot3 <- VariableFeaturePlot(pfc_human)
+plot4 <- LabelPoints(plot = plot3, points = top10, repel = TRUE)
+plot3 + plot4
+
+count_pfc_sample<-as.matrix(pfc_human@assays$RNA@counts[1:100,1:100])
+meta<-as.matrix(pfc_human@meta.data[1:100,])
+
+###Scale the data
+all.genes <- rownames(pfc_human)
+pfc_human <- ScaleData(pfc_human,vars.to.regress = "percent.mt")
+
+#PCA
+pfc_human<- RunPCA(pfc_human, features = VariableFeatures(object = pfc_human))
+print(pfc_human[["pca"]], dims = 1:5, nfeatures = 5)
+VizDimLoadings(pfc_human, dims=1:2, reduction="pca")
+DimPlot(pfc_human, reduction = "pca")
+
+#Now pca by factor
+DimPlot(pfc_human, reduction="pca", group.by="PFC_snRNAseq_site")
+DimPlot(pfc_human, reduction = "pca", group.by ="Sex")
+DimPlot(pfc_human, reduction = "pca", group.by = "Classification")
+DimPlot(pfc_human, reduction = "pca", group.by = "Sample_number")
+DimHeatmap(pfc_human, dims=1, cells=500, balanced=TRUE)
+DimHeatmap(pfc_human, dims=1:15, cells=500, balanced=TRUE)
+ElbowPlot(pfc_human)
+
+#Dimensions used and UMAP
+pfc_human<-FindNeighbors(pfc_human, dims=1:18)
+pfc_human<-FindClusters(pfc_human, resolution=0.3)
+head(Idents(pfc_human), 5)
+pfc_human<-RunUMAP(pfc_human, dims=1:18, label=TRUE)
+DimPlot(pfc_human, reduction="umap")
+
+#Individual sample plots for UMAP QC
+p<-DimPlot(pfc_human, reduction="umap", label=FALSE, split.by = 'Sample_number')
+p+NoLegend()+theme(text = element_text(size = 10))+theme(axis.text = element_text(size = 10))+   facet_wrap_paginate(~Sample_number, ncol=3, nrow=1, page=25) 
+
+
+#There was an effect of which instutition the samples were processed at, therefore we used the Harmony package (https://portals.broadinstitute.org/harmony/) to integarte and minimize site difference effects. 
+pfc_human<-RunHarmony(pfc_human, "PFC_snRNAseq_site")
+pfc_human<-FindNeighbors(pfc_human, reduction = "harmony", dims=1:18)
+pfc_human<-FindClusters(pfc_human, resolution=0.53)
+pfc_human<-RunUMAP(pfc_human, reduction="harmony", dims=1:18)
+DimPlot(pfc_human, reduction="umap", label=TRUE)
+saveRDS(pfc_human, file="~/pfc_afterharmony.rds")
+
+#This normalized the effect of the sample processing sites and this object moved forward in the downstreamanalysis
+
+
+#Cluster marker identification. After exporting table, clusters were identified using Enrichr and Metascape tools.
+pfc_markers <- FindAllMarkers(pfc_human, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+pfc_markers %>% group_by(cluster) %>% top_n(n = 2, wt = avg_log2FC)
+write.csv(pfc_markers,file="~/cluster_markers.csv")
+
+
+#Renaming clusters after cell type identification 
+new.cluster.ids<-c("Excit1", "Oligo1", "Neu1", "Oligo2", "Inhib1", "Ast1", "OPC1", "Inhib2", "MG1", "Excit2", "Inhib3", "Endo1", "Excit3", "VSMC", "Inhib4", "Ast2", "Oligo3", "MG2", "Ast/Oligo", "Peri", "Endo2", "Excit4", "Excit5", "Excit6", "Inhib5", "Ast/OPC", "Oligo4", "OPC2", "Oligo5","Inhib6")
+names(new.cluster.ids) <- levels(pfc_human)
+pfc_human <- RenameIdents(pfc_human, new.cluster.ids)
+DimPlot(pfc_human, reduction = "umap", label = TRUE)
+
+
+#Visualization of cluster markers and expression
+#(1)Stacked Violin Plot
+#https://github.com/ycl6/StackedVlnPlot
+features<-c("SLC17A7", "SATB2", "NPTX1", "CDH22","GFAP", "ALDH1L1", "AQP4", "MBP", "MOBP", "PLP1", "GAD1", "GAD2","RELN","VCAN", "PCDH15", "CSF1R", "APBB1IP", "P2RY12", "FLT1", "EPAS1", "ACTA2")
+VlnPlot(pfc_human, features, stack = TRUE, sort = TRUE, flip = TRUE) + theme(legend.position = "none")+theme(axis.text = element_text(size = 10)) +theme(legend.text = element_text(size = 10))
+
+#(2)Heatmap
+DoHeatmap(subset(pfc_human, downsample = 100), features = features, size = 3)
+
+#(3) Dot Plot
+DotPlot(pfc_human, features=features) + RotatedAxis()
+
+#Due to compressed expression of cortical layers in Excitatory Neuron cluster BLANK, we decided to subcluster Excitatory Neurons to better resolved cortical layer representation in the dataset.
+pfc_sub<-FindSubCluster(pfc_human, "Excit", "RNA_nn", subcluster.name = "Neu1",  resolution = 0.1)
+pfc_sub_final <- SetIdent(pfc_sub, value = pfc_sub@meta.data$BLANK)
+table(Idents(pfc_sub_final))
+DimPlot(pfc_sub_final, reduction = "umap", label = TRUE)+NoLegend()
+
+#QC metrics and plotting after cell type identification for supplemental figures
+#(1)plot seurat clusters by cell type
+celltype_by_cluster<-table(pfc_human@meta.data$seurat_clusters,pfc_human@meta.data$cell_type)
+celltype_by_cluster_ggplot<-as.data.frame(celltype_by_cluster)
+ggplot(data=celltype_by_cluster_ggplot,aes(x=Var1,y=Freq,fill=Var2))+geom_bar(stat="identity")+xlab("Seurat Cluster")+ylab("number of cells")
+
+#(2)plot mitochondrial % by sample and cell type
+Idents(pfc_human)<-"Sample_number"
+VlnPlot(pfc_human, features = c("percent.mt"), ncol = 1,pt.size = 0)
+Idents(pfc_human)<-"cell_type"
+VlnPlot(pfc_human, features = c("percent.mt"), ncol = 1,pt.size = 0)
+
+#(3)plot cell type by sample
+celltype_by_sample<-table(pfc_human@meta.data$Sample_number,pfc_human@meta.data$cell_type)
+celltype_by_sample<-celltype_by_sample/rowSums(celltype_by_sample)
+celltype_by_sample_ggplot<-as.data.frame(celltype_by_sample)
+ggplot(data=celltype_by_sample_ggplot,aes(x=Var1,y=Freq,fill=Var2))+geom_bar(stat="identity")+xlab("Sample")+ylab("proportion of cells")+geom_text(aes(label=round(Freq,2)),position = position_fill(vjust = 0.5))
+
+#(4)plot cell type by sequencing site
+celltype_by_site<-table(pfc_human@meta.data$PFC_snRNAseq_site,pfc_human@meta.data$cell_type)
+celltype_by_site<-celltype_by_site/rowSums(celltype_by_site)
+celltype_by_site_ggplot<-as.data.frame(celltype_by_site)
+ggplot(data=celltype_by_site_ggplot,aes(x=Var1,y=Freq,fill=Var2))+geom_bar(stat="identity")+xlab("Sample")+ylab("proportion of cells")+geom_text(aes(label=round(Freq,2)),position = position_fill(vjust = 0.5))
+
+#(5)plot cell type by Classification
+celltype_by_AUD<-table(pfc_human@meta.data$cell_type,pfc_human@meta.data$PFC_snRNAseq_site)
+celltype_by_AUD<-celltype_by_AUD/rowSums(celltype_by_AUD)
+celltype_by_AUD_ggplot<-as.data.frame(celltype_by_AUD)
+ggplot(data=celltype_by_AUD_ggplot,aes(x=Var1,y=Freq,fill=Var2))+geom_bar(stat="identity")+xlab("Sample")+ylab("proportion of cells")+geom_text(aes(label=round(Freq,2)),position = position_fill(vjust = 0.5))
+
+#This section ends with the seurat object ready for differential expression analysis, hdWGCNA, TF enrichment analysis and MAGMA analysis. 
+#This object will be loaded for all downstream analyses
+saveRDS(pfc_human, file="~/pfc_human_downstreamanalysis.rds")

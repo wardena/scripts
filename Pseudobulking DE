@@ -1,0 +1,60 @@
+#Neurostore Libra relies on the following packages, make sure they are loaded:
+	dplyr (>= 0.8.0),
+	purrr (>= 0.3.2),
+	tibble (>= 2.1.3),
+	magrittr (>= 1.5),
+	tester (>= 0.1.7),
+	Matrix (>= 1.2-14),
+	pbmcapply (>= 1.5.0),
+	lmtest (>= 0.9-37),
+	tidyselect (>= 0.2.5),
+	DESeq2 (>= 0.4.0),
+	Seurat (>= 3.1.5),
+	blme (>= 1.0-4),
+	edgeR (>= 3.28.1),
+	glmmTMB (>= 1.0.2.1),
+	limma (>= 3.1-3),
+	lme4 (>= 1.1-25),
+	lmerTest (>= 3.1-3),
+	matrixStats (>= 0.57.0),
+	methods,
+	stats,
+	Rdpack (>= 0.7),
+	apeglm
+
+
+install.packages("devtools")
+if (!requireNamespace("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+library("devtools")
+BiocManager::install(c("edgeR", "DESeq2", "limma"), force=TRUE)
+devtools::install_github("neurorestore/Libra")
+
+#Read in the .rds file from the Seurat Pipeline that has all cell types labeled and has been integrated with Harmony
+pfc_human<-read.RDS(file="~/pfc_human_downstreamanalysis.rds")
+
+#Add a cell type column to pfc human and meta data
+pfc_human@meta.data$cell_type <- Idents(pfc_human)
+pfc_human$cell_type <- Idents(pfc_human)
+pfc_counts<-pfc_human@assays$RNA@counts
+
+#extract treatment vector
+pfc_meta<-pfc_human@meta.data
+colnames(pfc_meta)
+#Check your metadata to verify that you select the correct columns for the AUD binary classifier, cell type and Sample Number
+colnames(pfc_meta[1]<-"sample_number"
+colnames(pfc_meta)[13]<-"label"
+colnames(pfc_meta)[50]<-"cell_type"
+pfc_meta<-pfc_meta[,c(1,13,50)]
+pfc_meta
+expr<-pfc_counts
+matrices = to_pseudobulk(expr, meta = pfc_meta)
+
+#save the matrices object
+qsave(matrices,"pseudobulk_matrices_fine.qs")
+
+##edgeR LRT
+pfc_meta.data$label<-factor(pfc_meta$label,level=c("Control","AUD"))
+DE<-run_de(expr, meta=pfc_meta) 
+DE_sig<-DE[which(DE$p_val_adj<0.05),]
+write.csv(DE,file="Pseudobulk_DEG_edgeR.csv")

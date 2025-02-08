@@ -1,0 +1,215 @@
+#This is an example of differential expression analysis between three genotypes. Pairwise analysis is within this example and could be applied to your analysis. 
+Here is a good tutorial for additional information: http://bioconductor.org/packages/devel/bioc/vignettes/DESeq2/inst/doc/DESeq2.html
+
+library(tidyverse)
+library(ggplot2)
+library(ggrepel)
+library(DEGreport)
+library(RColorBrewer)
+library(DESeq2)
+library(pheatmap)
+
+##Step 1: we are going to pull our data in. There are a couple of different ways to do this depending on how your data is structured. FOr this example, the count data is in a CSV format (Row=genes, Columns=Samples)
+
+## getwd() check to see where your directory is
+##setwd() set it to where your downloaded files are located
+data<-read.csv("MEF2C_iMG_FullRun_rawCounts_ANOVA", header = T)
+
+## it is critically important to have all your columns in the dataset match your metadata samples
+meta<-read.delim("MEF2C_ANOVA_ids.txt", header = T)
+
+##check that all your columns match between metadata and data
+names(data)[-1]==meta$Sample
+
+##[1] TRUE TRUE TRUE TRUE TRUE TRUE TRUE TRUE TRUE TRUE TRUE TRUE
+##[13] TRUE TRUE TRUE TRUE TRUE TRUE TRUE TRUE TRUE
+
+all(names(data)[-1]==meta$Sample)
+##[1] TRUE
+
+##now we make our metadata and data into data frames for downstream dds analysis
+metadata<-as.data.frame(meta)
+data<-as.data.frame(data)
+dds <- DESeqDataSetFromMatrix(countData=data, colData=metadata, design=~Category, tidy=TRUE)
+
+## now we rearrange our data into the categories we want and in the specific order we want. This is more crucial for downstream pairwise analysis and less so for the LRT method for a one-way ANOVA
+colData(dds)$Category<-factor(colData(dds)$Category,levels=c("Cont","Het", "KO"))
+
+## filter your count data, in this example I am saying I want counts greater than 1 in at least 2 of the total number of samples, this is a very lax filter
+dds_filtered <- dds[ rowSums(counts(dds, normalized=FALSE) >= 1 ) >= 2, ]
+
+##always check your dimensions to see how much you've cut off 
+dim(dds_filtered)
+
+##Pairwise compaison
+dds_new <- DESeq(dds_filtered)
+
+## Check the size factors
+sizeFactors(dds_new)
+
+##For pairwise comparison 
+contrast_KO <- c("Category", "Cont", "KO")
+res_tableKO <- results(dds_new, contrast=contrast_KO, alpha = 0.05)
+summary(res_tableKO)
+
+##out of 18407 with nonzero total read count
+##adjusted p-value < 0.05
+#LFC > 0 (up)       : 1170, 6.4%
+#LFC < 0 (down)     : 1504, 8.2%
+#outliers [1]       : 20, 0.11%
+#low counts [2]     : 3919, 21%
+#(mean count < 2)
+#[1] see 'cooksCutoff' argument of ?results
+#[2] see 'independentFiltering' argument of ?results
+
+contrast_Het <- c("Category", "Cont", "Het")
+res_tableHet <- results(dds_new, contrast=contrast_Het, alpha = 0.05)
+summary(res_tableHet)
+
+##MA plot that can be useful to exploring our results is the MA plot. The MA plot shows the mean of the normalized counts versus the log2 foldchanges for all genes tested. The genes that are significantly DE are colored to be easily identified. 
+plotMA(res_tableKO, ylim=c(-2,2))
+
+##check the expression of one of your favorite genes
+plotCounts(dds, gene="BIN1", intgroup="Category")
+
+##cutoffs
+lfc.cutoff <- 0.50
+padj.cutoff <- 0.05
+
+##make it a tibble
+res_tableKO_tb <- res_tableKO %>%
+  +     data.frame() %>%
+  +     rownames_to_column(var="gene") %>% 
+  +     as_tibble()
+
+##Now we can subset that table to only keep the significant genes using our pre-defined thresholds:
+sigKO <- res_tableKO_tb %>%
+  filter(padj < 0.05)
+sigKO
+
+##get normalized counts
+dds <- estimateSizeFactors(dds)
+sizeFactors(dds)
+normalized_counts <- counts(dds, normalized=TRUE)
+normalized_counts <- normalized_counts %>% 
+  data.frame() %>%
+  rownames_to_column(var="gene") %>% 
+  as_tibble()
+
+##Plotting a single gene
+d <- plotCounts(dds_new, gene="LPL", intgroup="Category", returnData = TRUE)
+
+# Plotting the LPL normalized counts, using the samplenames (rownames of d as labels)
+ggplot(d, aes(x = Category, y = count, color = Category)) + 
+       geom_point(position=position_jitter(w = 0.1,h = 0)) +
+       geom_text_repel(aes(label = rownames(d))) + 
+       theme_bw() +
+       ggtitle("LPL") +
+       theme(plot.title = element_text(hjust = 0.5))
+
+## Order results by padj values
+top20_sigKO_genes <- res_tableKO_tb %>% 
+  arrange(padj) %>% 	#Arrange rows by padj values
+  pull(gene) %>% 		#Extract character vector of ordered genes
+  head(n=20) 		#Extract the first 20 genes
+top20_sigKO_norm <- normalized_counts %>%
+  +     filter(gene %in% top20_sigKO_genes)
+
+# Gathering the columns to have normalized counts to a single column
+gathered_top20_sigKO <- top20_sigKO_norm %>%
+  gather(colnames(top20_sigKO_norm)[2:9], key = "Sample", value = "normalized_counts")
+
+## check the column header in the "gathered" data frame
+View(gathered_top20_sigKO)
+## Top 20 significant DE genes
+ggplot(gathered_top20_sigKO) +
+       geom_point(aes(x = gene, y = normalized_counts, color = Sample)) +
+       scale_y_log10() +
+       xlab("Genes") +
+       ylab("log10 Normalized Counts") +
+       ggtitle("Top 20 Significant DE Genes") +
+       theme_bw() +
+       theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+       theme(plot.title = element_text(hjust = 0.5))
+## Volcano Plot
+res_tableKO_tb <- res_tableKO_tb %>% 
+  +     mutate(threshold_KO = padj < 0.05 & abs(log2FoldChange) >= 0.58)
+ggplot(res_tableKO_tb) +
+  +     geom_point(aes(x = log2FoldChange, y = -log10(padj), colour = threshold_KO)) +
+  +     ggtitle("MEF2C Volcano Plot") +
+  +     xlab("log2 fold change") + 
+  +     ylab("-log10 adjusted p-value") +
+  +     #scale_y_continuous(limits = c(0,50)) +
+  +     theme(legend.position = "none",
+              +           plot.title = element_text(size = rel(1.5), hjust = 0.5),
+              +           axis.title = element_text(size = rel(1.25)))
+## Create a column to indicate which genes to label
+res_tableKO_tb <- res_tableKO_tb %>% arrange(padj) %>% mutate(genelabels = "")
+
+res_tableKO_tb$genelabels[1:10] <- res_tableKO_tb$gene[1:10]
+
+View(res_tableKO_tb)
+
+ggplot(res_tableKO_tb, aes(x = log2FoldChange, y = -log10(padj))) +
+  geom_point(aes(colour = threshold_KO)) +
+  geom_text_repel(aes(label = genelabels)) +
+  ggtitle("MEF2C KO") +
+  xlab("log2 fold change") + 
+  ylab("-log10 adjusted p-value") +
+  theme(legend.position = "none",
+        plot.title = element_text(size = rel(1.5), hjust = 0.5),
+        axis.title = element_text(size = rel(1.25))) 
+
+## You can also look at the top genes using DEGreport
+contrast <- c("Category", "Cont", "KO")
+res <- results(dds_new, contrast = contrast)
+DEGreport::degPlot(dds = dds_new, res = res, n = 20, xs = "Sample", group = "Category") # dds object is output from DESeq2
+
+
+##QC section 
+rld<-rlog(dds,blind=TRUE)
+plotPCA(rld, intgroup="Category")
+# Input is a matrix of log transformed values
+rld <- rlog(dds, blind=T)
+rld_mat <- assay(rld)
+pca <- prcomp(t(rld_mat))
+### Extract the rlog matrix from the object
+rld_mat <- assay(rld)
+
+### Compute pairwise correlation values
+rld_cor <- cor(rld_mat)    ## cor() is a base R function
+head(rld_cor)   ## check the output of cor(), make note of the rownames and colnames
+pheatmap(rld_cor)
+pheatmap(rld_cor, color = heat.colors, border_color=NA, fontsize = 5, fontsize_row = 5, height=50, width=50)
+
+##This is an LRT method for 3 groups. See pairwise example if that better fits your analysis.
+dds_lrt <- DESeq(dds_filtered, test="LRT", reduced = ~ 1)
+res_LRT <- results(dds_lrt)
+sig_res_LRT <- res_LRT %>%
+  data.frame() %>%
+  rownames_to_column(var="gene") %>% 
+  as_tibble() %>% 
+  filter(padj < padj.cutoff)
+# Get sig gene lists
+sigLRT_genes <- sig_res_LRT %>% 
+  pull(gene)
+
+length(sigLRT_genes)
+
+# Compare to numbers we had from Wald test
+nrow(sigKO)
+# Subset results for faster cluster finding (for classroom demo purposes)
+clustering_sig_genes <- sig_res_LRT %>%
+  +     arrange(padj) %>%
+  +     head(n=1000)
+# Obtain rlog values for those significant genes
+cluster_rlog <- rld_mat[clustering_sig_genes$gene, ]
+clusters <- degPatterns(cluster_rlog, metadata=colData(dds), time = "Category", col=NULL)
+
+# Extract the Group 1 genes
+cluster_groups <- clusters$df
+group1 <- clusters$df %>%
+  filter(cluster == 1)
+
+
+

@@ -1,0 +1,237 @@
+As of June 2022: 
+References: 
+Mouse Genome GRCm39 (https://www.ncbi.nlm.nih.gov/assembly/GCF_000001635.27/)
+Rat Genome mRatBN7.2 (https://useast.ensembl.org/Rattus_norvegicus/Info/Index) 
+Human Genome GRCh38 (https://www.ncbi.nlm.nih.gov/assembly/GCF_000001405.26/)
+
+Packages:
+Htseq (version 2.0.1)
+Multiqc (version 1.9)
+STAR (version 2.7.10a)
+samtools (version 1.3.1)
+python (version 2.7 required for Htseq) 
+RSeQC (version 4.0.0)
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+#Preparation for Tagseq analysis. 
+
+########## Get your data from basespace ##########
+
+#1. You will receive an email from GSAF about your job with subject 'BaseSpace: Project Transfer Ownership Request'
+
+#2. Login and click on accept and click on the job number.The next thing you will need will be the project ID number, which you can get from the web address of the project when you open in, for example: Project ID: https://basespace.illumina.com/projects/146495357
+
+#3. To download FASTQs from a project using BaseSpace CLI, you first want to make sure you are running at least version. If you are running an older version, please follow the steps and install or update it from the download page here: https://developer.basespace.illumina.com/docs/content/documentation/cli/cli-overview
+
+#4. To download the FASTQs, you would then use the command: bs download project -i={ProjectID} -o={destination} -extension=fastq.gz
+
+#5. For example, here {ProjectID} is 146495357, and {destination} will be the local location where you want to save the files.
+
+##Please note this is an example you will have to make sure you are using the right source and destinations
+
+#6. You will need to move your raw data files from the work directory where basespace puts them to your scratch directory. To keep things neat. We recommend this kind of naming structure mv *.fastq /stor/work/WCAAR/rawdata/Tagseq_Experiment_description_JA#####/raw_data 
+
+########## Concatenate your files ##########
+#Now you need to concatenate the fastq files. You will have  *_R1*.fastq.gz files with multiple lanes lanes (i.e. L001/L002/L003) per sample that needs to be collapsed into a single fastq.gz file for downstream analysis. You need to know ahead of time how many lanes your samples are spread across. You will want to cut your file names to have the same length after concatenation, removing the *L001 and L002 part of the naming. This is line 5, the cut -c 22 is the number of characters you are going to cut, in this case 22 characters. The cut length may differ, depending on your naming, check your character length you want to cut before proceeding.
+
+for a in $(find ./ -type f -name "*.fastq.gz" | while read F; do basename $F | rev | cut -c 22- | rev | uniq; done)
+do echo "Merging R1" 
+cat "$a"_L00*_R1_001.fastq.gz > "$a".fastq.gz
+done;
+
+#Move concatenated files to new directory to keep things organized. Then delete non-concatenated files. This way your won't confuse your concatenated and non-concatenated files. DO NOT DELETE IN YOUR RAW FASTQ FILE DIRECTORY. Check which directory you are in before proceeding (cd).
+
+#Create new directory and move files
+#make sure you are NOT in your raw fastq folder when you make your concat folder
+mkdir concat_fastq
+cp *.gz /stor/scratch/WCAAR/your_scratch/tagseq_experiment#/concat_fastq/
+cd /stor/scratch/WCAAR/your_scratch/tagseq_experiment#/concat_fastq/
+
+#Remove non-concatenated files 
+rm *L00*.*
+
+########## QC Step 1 ##########
+
+#Create a FASTQC report for all fastq files before trimming and mapping. 
+for a in *.fastq.gz; do fastqc $a; done
+
+#Create new folder for the qc files 
+mkdir QC_beforetrim
+mv ./*qc*.* /stor/scratch/WCAAR/your_scratch/tagseq_experiment#/concat_fastq/QC_beforetrim
+cd /stor/scratch/WCAAR/your_scratch/tagseq_experiment#/concat_fastq/QC_beforetrim
+
+#To see a html version of each fastqc report use multiqc. This will create a mutilqc_.html. Download onto your local machine using scp and open it in a browser to view your QC metrics. 
+multiqc .
+
+cd ..
+
+#Unzip files 
+for a in *.gz; do gunzip $a; done
+
+########## Trimming ##########
+#Trimming steps begin here. (1) Go to https://github.com/z0on/tag-based_RNAseq. Click on tagseq_trim_launch.pl and copy the code. Then paste the copied code into TextEdit on a Mac, Notepad++ on PC and save on your local computer as "tagseq_trim_launch.pl". The reason you need TextEdit is because it won't change characters like apoostrophes and will allow you to paste into nano. 
+
+#To create this code on the POD, go to your folder that has your unzipped/concatenated fastq files. 
+cd /stor/scratch/WCAAR/your_scratch/tagseq_experiment#/concat_fastq/
+nano tagseq_trim_launch.pl
+
+#Paste the copied code from your saved TextEdit file into the opened nano.
+#save & exit nano 
+
+Control+X
+
+#Now do the same for the tagseq_clipper.pl code from the same Github page (https://github.com/z0on/tag-based_RNAseq). Copy the code, paste into a TextEdit (*.txt) file. Save on your local computer as "tagseq_clipper.pl". Go to your folder that has your unzipped/concatenated fastq files.
+
+nano tagseq_clipper.pl
+
+#Paste the copied code from your saved TextEdit file into the opened nano.
+#save & exit nano 
+
+Control+X
+
+#Generate trimming commands for each fastq file, generating a "clean" file.
+perl tagseq_trim_launch.pl  '\.fastq$' > clean
+
+# Now you need to make sure that perl is at the beginning of each line clean code. 
+sed -i 's|tagseq_clipper.pl|perl tagseq_clipper.pl|g' clean
+
+#Make Trimming commands executable 
+chmod +x clean 
+nano clean # to check it 
+#Execute Trimming command and make a trim.stats summary folder 
+nohup ./clean &>trim.stats &
+
+#Move your trim files to a new directory to keep things clean 
+mkdir trim_files
+mv *.trim /stor/scratch/WCAAR/your_scratch/tagseq_experiment#/concat_fastq/trim_files
+cd /stor/scratch/WCAAR/your_scratch/tagseq_experiment#/concat_fastq/trim_files
+
+#QC
+for a in *.trim; do fastqc $a; done
+
+########## GERCC reference genome build ##########
+##GERCC STAR are already in the references folder with STAR build. If you need to do this again yourself with an udpated version the code is below. 
+### Make sure you get the latest versions of the reference files. THESE VERSIONS ARE UPDATED AS OF MARCH 23, 2022 for GRCm39 build. 
+
+### To include ERCC in mapping and counting file 
+wget "https://tools.thermofisher.com/content/sfs/manuals/cms_095047.txt"
+
+### Make ERCC.fa file
+cat cms_095047.txt | awk -F "\t" -v OFS="" 'NR>1{print ">",$1," ",$2," ",$3," ",$4,"\n",$5}' > ercc.fa
+
+### Get the fasta files and GTF files from Gencode https://www.gencodegenes.org/mouse/
+### Genome sequence (GRCm39)	ALL
+
+wget ftp://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_mouse/release_M22/GRCm39.genome.fa.gz
+
+gunzip GRCm39.genome.fa.gz
+
+### Get the gtf file Comprehensive gene annotation	ALL
+wget ftp://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_mouse/release_M28/gencode.vM28.chr_patch_hapl_scaff.annotation.gtf.gz
+
+gunzip gencode.vM28.chr_patch_hapl_scaff.annotation.gtf.gz
+
+### Make a copy of the file
+cp GRCm39.genome.fa ERCC.GRCm39.genome.fa
+cp  gencode.vM28.chr_patch_hapl_scaff.annotation.gtf  ERCC.gencode.vM28.chr_patch_hapl_scaff.annotation.gtf
+cat ercc.fa >> ERCC.GRCm39.genome.fa
+
+### Take a look
+column -s, -t < cms_095047.txt | less -#2 -N -S
+
+### Create ERCC gtf
+cat cms_095047.txt | awk -F "\t" -v OFS="" 'NR>1{print $1,"\t","ercc","\t","gene","\t","1","\t",length($5),"\t",".","\t","+","\t",".","\t","gene_id \"G",$1,"\"; ","gene_version \"1\"; ", "gene_name \"",$1,"\"; ","gene_source \"ercc\"; ","gene_type \"ercc\";"}' > ercc.gtf
+
+### Take a look at head
+head ercc.gtf
+ 
+### The ercc.gtf is appended to the bottom of the GTF/GFF file.
+cat ercc.gtf >> ERCC.gencode.vM28.chr_patch_hapl_scaff.annotation.gtf
+
+
+########## STAR reference genome build ##########
+## Make Star Genome
+### location /stor/home/user/references/
+STAR --runMode genomeGenerate --runThreadN 8 --genomeFastaFiles /stor/home/user/references/ERCC.GRCm39.genome.fa  --sjdbGTFfile /stor/home/user/references/ERCC.gencode.vM28.chr_patch_hapl_scaff.annotation.gtf --genomeDir /stor/home/user/references/Star_ERCC_Gencode_Mmv28/
+
+########## STAR mapping your samples ##########
+#You will need  to locate the pre-made STAR genome scaffold in the your references directory (/stor/home/user/references/)
+#Make a new folder called before running code for the trimmed STAR files
+cd /stor/scratch/WCAAR/your_scratch/tagseq_experiment#/concat_fastq/trim_files
+mkdir star_trim
+
+#STAR mapping
+for f in `ls -1 *.fastq.trim | sed 's/.fastq.trim//'`; do time STAR --runThreadN 20 --outSAMtype BAM SortedByCoordinate --outFileNamePrefix /stor/scratch/WCAAR/AnnaWarden_scratch/Nihal_practice_Tagseq/concat_fastq/fastq_trim/star_trim/Star_${f} --genomeDir /stor/home/wardena/references/Star_ERCC_Gencode_Mmv28/ --readFilesIn ${f}.fastq.trim; done
+cd /stor/scratch/WCAAR/your_scratch/tagseq_experiment#/concat_fastq/trim_files/star_trim
+
+
+## Rat genome directory 
+/stor/home/wardena/references/Rat_7.2_ensembl_genome
+
+########## QC Step 2 ##########
+#Multiqc now 
+multiqc . --interactive
+
+########## Samtools ##########
+#Samtools
+for i in *bam; do samtools index $i; done
+
+########## HTseq ##########
+##if you have an error about loading HTseq environment (Script 'scripts/htseq-count' not found in metadata at '/usr/lib/python2.7/dist-packages/HTSeq-0.6.1p1.egg-info'). Solution I used was to create a conda environment with python 2.7. Then conda install -c bioconda htseq, updated in miniconda3.
+
+conda activate py2.7
+for i in `ls -1 *.bam | sed 's/.bam//'`; do htseq-count -m intersection-nonempty -s yes -f bam -r pos -t gene $i.bam /stor/home/wardena/references/Mus_musculus_ERCC_files/ERCC.gencode.vM28.chr_patch_hapl_scaff.annotation.gtf > $i.count.sorted.txt ;done
+
+##Rat file
+~/references/Rat_7.2_ensembl_genome/Rattus_norvegicus.mRatBN7.2.106.chr.gtf
+
+mkdir htseq_counts
+mv *.txt /stor/scratch/WCAAR/your_scratch/tagseq_experiment#/concat_fastq/trim_files/star_trim/htseq_counts
+cd htseq_counts
+
+##Multiqc for htseq mapping 
+multiqc .
+
+#for Htseq biotype 
+mkdir htseq_biotype
+for i in `ls -1 *.bam | sed 's/.bam//'`; do htseq-count -m intersection-nonempty -s yes -f bam -r pos -t gene -i gene_type $i.bam ~/references/ERCC.gencode.vM28.chr_patch_hapl_scaff.annotation.gtf > $i.biotype.count.sorted.txt ;done
+mv *.txt htseq_biotype/
+
+########## Rseqc ##########
+##RSeQC will not work with anaconda3. You will need to install miniconda3 if you haven't already. In your home path directory where you anaconda3 is. 
+# go to home directory 
+cd ~
+mkdir -p ~/miniconda3
+wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O ~/miniconda3/miniconda.sh
+The miniconda.sh script comes with a few basic options. Most notably we used -b to be able to run unattended, which means that all of the agreements are automatically accepted without user prompt. -u updates any existing installation in the directory of install if there is one. -p is the directory to install into.
+bash ~/miniconda3/miniconda.sh -b -u -p ~/miniconda3
+rm -rf ~/miniconda3/miniconda.sh
+~/miniconda3/bin/conda init bash
+~/miniconda3/bin/conda init zsh
+# restart shell 
+
+#Now you will need to install pip if it is not in your miniconda3, check in path: /minicond3/bin/
+#wget https://pypi.python.org/pypi/pip
+#Check that it is installed
+#Next install numpy in your miniconda3/bin
+pip install numpy
+#now install RSeQC in your miniconda3 bin 
+pip install RSeQC
+#ls your miniconda3/bin directory, you should have a lot more packages in there including read_distribution.py which you will use below
+
+
+#Got gtf2bed file from here https://github.com/ExpressionAnalysis/ea-utils/blob/master/clipper/gtf2bed
+nano gtf2bed.pl paste the perl script and use that for the making the bed file
+chmod +x gtf2bed.pl 
+perl gtf2bed /stor/home/user/references/ERCC.gencode.vM28.chr_patch_hapl_scaff.annotation.gtf > /stor/home/user/references/ERCC.gencode.vM28.chr_patch_hapl_scaff.annotation.bed ### All samples Rseqc
+
+#this perl script worked as of March 25th, 2022 on wcarcomp02. 
+
+for i in *.bam; do ~/miniconda3/bin/read_distribution.py -i $i -r /stor/home/wardena/references/Mus_musculus_ERCC_files/ERCC.gencode.vM28.chr_patch_hapl_scaff.annotation.bed > /stor/scratch/WCAAR/AnnaWarden_scratch/Nihal_practice_Tagseq/concat_fastq/trim_files/star_trim/Rseqc/$i.read_distribution.txt; done
+
+
+########## Downstream analysis ##########
+#See additional scripts for DEseq2 analysis and WGCNA
+#Note ERCC analysis is performed in excel, see ERCC READ.ME
+
