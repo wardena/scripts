@@ -1,0 +1,144 @@
+#Example Xenium pipeline for mouse prefrontal cortex (PFC) from saline-treated animal
+#https://satijalab.org/seurat/articles/seurat5_spatial_vignette_2#mouse-brain-10x-genomics-xenium-in-situ
+
+gc()
+rm(list = ls())
+setwd("/path/to/file/Xenium/")
+#Loading packages for analysis 
+#ReadXenium may not work, depending on the environment. I installed developer Seurat to overcome this(https://github.com/satijalab/seurat/issues/9060; https://github.com/satijalab/seurat/pull/8605)
+#the version is 5.`.0.9004`
+# install.packages(c("spatstat.utils", "spatstat.geom", "spatstat.random", "spatstat.explore"))
+#Then a specific version of Matrix must be installed to be compatiable with the developer version. 
+# remove.packages("Matrix")
+# install.packages("Matrix", version = "1.6.5", force=T)
+#remotes::install_version("Matrix", version = "1.6-5", lib = "~/R/x86_64-pc-linux-gnu-library/4.3")
+#Finally SeuratObject can be reloaded
+# install.packages("SeuratObject", force=T)
+#Finally, some environments may need arrow as well since transcripts are no longer in a .csv, but in a .parquet format, which requires the arrow package to be able to load them 
+#install.packages("arrow")
+library(dplyr)
+library(Seurat)
+# Load the Xenium data
+path_PFC_sal <- "/path/to/file/saline_sample"
+
+# devtools::install_github('10XGenomics/seurat@develop',force=TRUE)
+xenium_PFC_sal<-Seurat::LoadXenium(path_PFC_sal)
+
+#explore meta-data
+meta <- xenium_PFC_sal@meta.data
+View(meta)
+#we used the 5k panel, which includes 5,006 transcripts. However, the maximum number of features detected per barcode is 1,858
+
+# remove cells with 0 counts
+xenium_PFC_sal<- subset(xenium_PFC_sal, subset = nCount_Xenium > 0)
+
+#saniy-check for subsetting counts<0
+meta <- xenium_PFC_sal@meta.data
+View(meta)
+
+VlnPlot(xenium_PFC_sal, features = c("nFeature_Xenium", "nCount_Xenium"), ncol = 2, pt.size = 0)
+#plot some markers
+ImageDimPlot(xenium_PFC_sal, fov = "fov", molecules = c("Gad1", "Sst", "Pvalb", "Gfap"), nmols = 20000)
+#now plot expression of some canonical neuronal and glial cell types
+ImageFeaturePlot(xenium_PFC_sal, features = c("Gad1", "Sst", "Pvalb", "Gfap"), max.cutoff = c(25,
+                                                                                             35, 12, 10), size = 0.75, cols = c("white", "red"))
+
+#We can zoom in on a chosen area with the Crop() function. Once zoomed-in, we can visualize cell segmentation boundaries along with individual molecules.
+# cropped.coords <- Crop(xenium_PFC_sal[["fov"]], x = c(1200, 2900), y = c(3750, 4550), coords = "plot")
+# xenium_PFC_sal[["zoom"]] <- cropped.coords
+# # visualize cropped area with cell segmentations & selected molecules
+# DefaultBoundary(xenium_PFC_sal[["zoom"]]) <- "segmentation"
+# ImageDimPlot(xenium_PFC_sal, fov = "zoom", axes = TRUE, border.color = "white", border.size = 0.1, cols = "polychrome",
+#              coord.fixed = FALSE, molecules = c("Gad1", "Sst", "Npy2r", "Pvalb", "Nrn1"), nmols = 10000)
+
+#Normalizing and clustering the data
+#If memory issue adjust the future.globals.maxSize to 2 GB
+options(future.globals.maxSize = 2 * 1024^3)
+xenium_PFC_sal <- SCTransform(xenium_PFC_sal, assay = "Xenium")
+xenium_PFC_sal <- RunPCA(xenium_PFC_sal, npcs = 30, features = rownames(xenium_PFC_sal))
+xenium_PFC_sal<- RunUMAP(xenium_PFC_sal, dims = 1:30)
+xenium_PFC_sal <- FindNeighbors(xenium_PFC_sal, reduction = "pca", dims = 1:30)
+xenium_PFC_sal <- FindClusters(xenium_PFC_sal, resolution = 0.3)
+
+#investigation of the normalized clustered data
+DimPlot(xenium_PFC_sal)
+FeaturePlot(xenium_PFC_sal, features = c("Cux2", "Bcl11b", "Foxp2", "Gad1", "Sst", "Gfap","Aldh1l1","Prkcd","Tlr7"))
+ImageDimPlot(xenium_PFC_sal, cols = "polychrome", size = 0.75)
+#next will be to decompose cell types based on Allen Brain Atlas
+#Run RCTD
+devtools::install_github("dmcable/spacexr", build_vignettes = FALSE)
+library(spacexr)
+
+query.counts <- GetAssayData(xenium_PFC_sal, layer = "Xenium", slot = "counts")
+coords <- GetTissueCoordinates(xenium_PFC_sal, which = "centroids")
+rownames(coords) <- coords$cell
+coords$cell <- NULL
+query <- SpatialRNA(coords, query.counts, colSums(query.counts))
+
+#read Allen brain data
+allen.cortex.ref <- readRDS("./References/allen_cortex.rds")
+allen.cortex.ref <- UpdateSeuratObject(allen.cortex.ref)
+Idents(allen.cortex.ref) <- "subclass"
+# remove CR cells because there aren't enough of them for annotation
+allen.cortex.ref <- subset(allen.cortex.ref, subset = subclass != "CR")
+counts <- GetAssayData(allen.cortex.ref, assay = "RNA", slot = "counts")
+cluster <- as.factor(allen.cortex.ref$subclass)
+names(cluster) <- colnames(allen.cortex.ref)
+nUMI <- allen.cortex.ref$nCount_RNA
+names(nUMI) <- colnames(allen.cortex.ref)
+nUMI <- colSums(counts)
+levels(cluster) <- gsub("/", "-", levels(cluster))
+reference <- Reference(counts, cluster, nUMI)
+
+# run RCTD in parallel
+RCTD <- create.RCTD(query, reference, max_cores = 8)
+RCTD <- run.RCTD(RCTD, doublet_mode = "doublet")
+
+#annotation
+xenium_PFC_sal_annot <- AddMetaData(xenium_PFC_sal, metadata= RCTD@results$results_df)
+meta_annot <- xenium_PFC_sal_annot@meta.data
+View(meta_annot)
+SpatialDimPlot(xenium_PFC_sal_annot, group.by = "first_type")
+table(xenium_PFC_sal_annot@meta.data$first_type)
+
+#plotting cell type annotation per cell across clusters
+#adding percentage of cell type per cluster
+first_type <- meta_annot %>% 
+  group_by(first_type, seurat_clusters) %>% 
+  summarise(Nb = n()) %>%
+  mutate(C = sum(Nb)) %>%  
+  mutate(Percent = Nb/C*100) 
+
+library(ggplot2)
+library(viridis)
+ggplot(first_type, aes(fill = first_type, y = Percent, x = seurat_clusters)) + 
+  geom_bar(position = "fill", stat = "identity") + 
+  scale_fill_viridis(discrete = TRUE, option = "H") + 
+  theme(legend.position = 'top', axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)) +
+  ggtitle("PFC Xenium Allen Brain Atlas annotation first_type")
+
+second_type <- meta_annot %>% 
+  group_by(second_type, seurat_clusters) %>% 
+  summarise(Nb = n()) %>%
+  mutate(C = sum(Nb)) %>%  
+  mutate(Percent = Nb/C*100) 
+
+ggplot(second_type, aes(fill = second_type, y = Percent, x = seurat_clusters)) + 
+  geom_bar(position = "fill", stat = "identity") + 
+  scale_fill_viridis(discrete = TRUE, option = "H") + 
+  theme(legend.position = 'top', axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)) +
+  ggtitle("PFC Xenium Allen Brain Atlas annotation second_type")
+
+saveRDS(object)
+
+#Move to pairwise comparison or more detail on cell types
+
+
+
+
+
+
+
+
+
+
