@@ -1,0 +1,119 @@
+#Example of integration pilot data between Xenium and scRNA-seq experiments 
+#(1) read in one of the slices as a test, slice B1
+#load 10x
+#https://satijalab.org/seurat/reference/load10x_spatial
+library(Seurat)
+library(ggplot2)
+library(patchwork)
+library(dplyr)
+library("gplots")
+
+data.dir<-"/path/to/file/visium_JA20332/B1/outs"
+list.files(data.dir)
+slice_B1<-Load10X_Spatial(data.dir,
+  filename = "filtered_feature_bc_matrix.h5",
+  assay = "Spatial",
+  slice = "B1",
+  filter.matrix = TRUE)
+#initial visualization and data pre processing
+plot1 <- VlnPlot(slice_B1, features = "nCount_Spatial", pt.size = 0.1) + NoLegend()
+plot2 <- SpatialFeaturePlot(slice_B1, features = "nCount_Spatial") + theme(legend.position = "right")
+wrap_plots(plot1, plot2)
+#normalize using scTranform
+slice_B1 <- SCTransform(slice_B1, assay = "Spatial", verbose = FALSE)
+#try feature expression plot for pan-neuronal marker
+p1 <- SpatialFeaturePlot(slice_B1, features = "Rbfox3", pt.size.factor = 1)
+p1
+
+#dimensionality reduction,clustering and visualization
+slice_B1 <- RunPCA(slice_B1, assay = "SCT", verbose = FALSE)
+slice_B1 <- FindNeighbors(slice_B1, reduction = "pca", dims = 1:30)
+slice_B1 <- FindClusters(slice_B1, verbose = FALSE)
+slice_B1 <- RunUMAP(slice_B1, reduction = "pca", dims = 1:30)
+
+#visualize umap results overlaid on the section image
+p1 <- DimPlot(slice_B1, reduction = "umap", label = TRUE)
+p2 <- SpatialDimPlot(slice_B1, label = TRUE, label.size = 3)
+p1 + p2
+
+#identification of spatially variable features
+slice_B1 <- FindSpatiallyVariableFeatures(slice_B1, assay = "SCT", features = VariableFeatures(slice_B1)[1:1000], 
+                                       selection.method = "markvariogram")
+DefaultAssay(slice_B1) <- "Spatial"
+top.features <- head(SpatiallyVariableFeatures(slice_B1, selection.method = "markvariogram"), 6)
+SpatialFeaturePlot(slice_B1, features = top.features, ncol = 3, alpha = c(0.1, 1))
+SpatialFeaturePlot(slice_B1, features = c("Cd14","Tlr4","Myd88","Il10","Il6ra"), ncol = 3, alpha = c(0.1, 1))
+
+#load the seurat single cell data from pilot experimen t
+#load("/path/to/file/cie_seurat_object_small.RData")
+head(cie_seurat@meta.data)
+DimPlot(cie_seurat,group.by="major_lineage",label=TRUE)
+
+#This is a pilot run, but tutorial will subset cortex from spatial data, but I am using the whole slice for now
+#Find anchors between the spatial and single nuclei
+anchors <- FindTransferAnchors(reference = cie_seurat, query = slice_B1, normalization.method = "SCT")
+predictions.assay <- TransferData(anchorset = anchors, refdata = cie_seurat$major_lineage, prediction.assay = TRUE, 
+                                  weight.reduction = slice_B1[["pca"]], dims = 1:30)
+slice_B1[["predictions"]] <- predictions.assay
+
+#plot by prediction scores
+DefaultAssay(slice_B1) <- "predictions"
+SpatialFeaturePlot(slice_B1, features = c("Astrocytes","OPC"), pt.size.factor = 1.6, ncol = 2, crop = TRUE)
+SpatialFeaturePlot(slice_B1, features = c("Endothelial Cells"), pt.size.factor = 1.6, ncol = 2, crop = TRUE)
+SpatialFeaturePlot(slice_B1, features = levels(cie_seurat$major_lineage), pt.size.factor = 1.6, ncol = 2, crop = TRUE)
+SpatialFeaturePlot(slice_B1, features = c("Layer 5-6 neurons"), pt.size.factor = 1.6, ncol = 1, crop = TRUE)
+
+#removing level 5 because the pipeline replaced the _ in layer 5_6 with hyphen
+#so I plotted it outside the loop
+for (i in levels (cie_seurat$major_lineage)[-5]){p<-SpatialFeaturePlot(slice_B1, features = i, pt.size.factor = 1.6, ncol = 1, crop = TRUE)
+
+  print(p)}
+
+#working great, now I want to try moving from major_lineage to seurat clusters ,and see if different astrocytes clusters go to different regions
+predictions.assay.clusters <- TransferData(anchorset = anchors, refdata = cie_seurat$seurat_clusters, prediction.assay = TRUE, 
+                                  weight.reduction = slice_B1[["pca"]], dims = 1:30)
+slice_B1[["predictions_seurat"]] <- predictions.assay.clusters
+DefaultAssay(slice_B1) <- "predictions_seurat"
+SpatialFeaturePlot(slice_B1, features = c("20","6"), pt.size.factor = 1.6, ncol = 2, crop = TRUE)
+SpatialFeaturePlot(slice_B1, features = c("10","7"), pt.size.factor = 1.6, ncol = 2, crop = TRUE)
+SpatialFeaturePlot(slice_B1, features = c("5","14"), pt.size.factor = 1.6, ncol = 2, crop = TRUE)
+SpatialFeaturePlot(slice_B1, features = c("22","23"), pt.size.factor = 1.6, ncol = 2, crop = TRUE)
+SpatialFeaturePlot(slice_B1, features = c("24"), pt.size.factor = 1.6, ncol = 2, crop = TRUE)
+
+###
+#I want to plot a heat map with slice seurat cluster annotation on one axis and precitions for each lineage on other
+#extract  the predictions
+predictions<-t(slice_B1@assays$predictions[,])
+#extract seurat clusters
+se_clusters<-cbind(rownames(slice_B1@meta.data),as.character(slice_B1@meta.data$seurat_clusters))
+rownames(se_clusters)<-se_clusters[,1]
+#merge the the annotation with the slice cluster
+slice_clusters_predictions<-merge(predictions,se_clusters,by=0)
+#remove the barcodes row name
+slice_clusters_predictions<-slice_clusters_predictions[,-c(1,11)]
+#summarize the dataframe so that each cluster has an average prediction score for each lineage
+slice_B_scores_summarized<-aggregate(. ~ V2, slice_clusters_predictions, mean)
+rownames(slice_B_scores_summarized)<-slice_B_scores_summarized$V2
+slice_B_scores_summarized<-slice_B_scores_summarized[,-1]
+slice_B_scores_summarized<-slice_B_scores_summarized[order(match(rownames(slice_B_scores_summarized), 0:12)),order(match(colnames(slice_B_scores_summarized), c("Excitatory","Inhibitory","Layer 5-6 neurons","OPC","Oligodendrocytes","Astrocytes","Microglia","Endothelial Cells"))) , drop = FALSE]
+heatmap(as.matrix(slice_B_scores_summarized[,-9]), Colv = NA, scale="column")
+Colors=c("white","yellow","red")
+Colors=colorRampPalette(Colors)(100)
+jpeg("slice_B_spatial_pred.jpeg",width=1000,height=1000)
+heatmap.2(as.matrix(slice_B_scores_summarized[,-9]), Rowv=FALSE,Colv = NA,trace="none",dendrogram="none",scale="column",col=Colors,key=TRUE,density.info="none",srtCol=25)
+dev.off()
+
+#try doing the same but with z scoring the prediction scores under each major lineage
+#then average that by cluseter and plot
+slice_clusters_predictions_scaled<-slice_clusters_predictions
+slice_clusters_predictions_scaled[,1:9]<-scale(slice_clusters_predictions[,1:9])
+
+#get the markers for each of the clusters in slice B for the inia figure
+#slice_B1@meta.data$seurat_clusters
+Idents(slice_B1)<-"seurat_clusters"
+all_markers_B1<- FindAllMarkers(object = slice_B1)
+write.csv(all_markers_B1,file="cluster_markers_slice_B1.csv")
+
+#filter out non-significant
+all_markers_B1_sig<-all_markers_B1[which(all_markers_B1$p_val_adj<0.05),]
+write.csv(all_markers_B1_sig,file="cluster_markers_slice_B1_sig.csv")
