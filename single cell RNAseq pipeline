@@ -156,7 +156,7 @@ p+NoLegend()+theme(text = element_text(size = 10))+theme(axis.text = element_tex
 #There was an effect of which instutition the samples were processed at, therefore we used the Harmony package (https://portals.broadinstitute.org/harmony/) to integarte and minimize site difference effects. 
 pfc_human<-RunHarmony(pfc_human, "PFC_snRNAseq_site")
 pfc_human<-FindNeighbors(pfc_human, reduction = "harmony", dims=1:18)
-pfc_human<-FindClusters(pfc_human, resolution=0.53)
+pfc_human<-FindClusters(pfc_human, resolution=0.5)
 pfc_human<-RunUMAP(pfc_human, reduction="harmony", dims=1:18)
 DimPlot(pfc_human, reduction="umap", label=TRUE)
 saveRDS(pfc_human, file="~/pfc_afterharmony.rds")
