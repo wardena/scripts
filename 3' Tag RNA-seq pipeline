@@ -30,7 +30,7 @@ RSeQC (version 4.0.0)
 
 ##Please note this is an example you will have to make sure you are using the right source and destinations
 
-#6. You will need to move your raw data files from the work directory where basespace puts them to your scratch directory. To keep things neat. We recommend this kind of naming structure mv *.fastq /stor/work/WCAAR/rawdata/Tagseq_Experiment_description_JA#####/raw_data 
+#6. You will need to move your raw data files from the work directory where basespace puts them to your scratch directory. To keep things neat. We recommend this kind of naming structure mv *.fastq /path/to/file/raw_data 
 
 ########## Concatenate your files ##########
 #Now you need to concatenate the fastq files. You will have  *_R1*.fastq.gz files with multiple lanes lanes (i.e. L001/L002/L003) per sample that needs to be collapsed into a single fastq.gz file for downstream analysis. You need to know ahead of time how many lanes your samples are spread across. You will want to cut your file names to have the same length after concatenation, removing the *L001 and L002 part of the naming. This is line 5, the cut -c 22 is the number of characters you are going to cut, in this case 22 characters. The cut length may differ, depending on your naming, check your character length you want to cut before proceeding.
@@ -45,8 +45,8 @@ done;
 #Create new directory and move files
 #make sure you are NOT in your raw fastq folder when you make your concat folder
 mkdir concat_fastq
-cp *.gz /stor/scratch/WCAAR/your_scratch/tagseq_experiment#/concat_fastq/
-cd /stor/scratch/WCAAR/your_scratch/tagseq_experiment#/concat_fastq/
+cp *.gz /path/to/file/tagseq_experiment#/concat_fastq/
+cd /path/to/file/tagseq_experiment#/concat_fastq/
 
 #Remove non-concatenated files 
 rm *L00*.*
@@ -58,8 +58,8 @@ for a in *.fastq.gz; do fastqc $a; done
 
 #Create new folder for the qc files 
 mkdir QC_beforetrim
-mv ./*qc*.* /stor/scratch/WCAAR/your_scratch/tagseq_experiment#/concat_fastq/QC_beforetrim
-cd /stor/scratch/WCAAR/your_scratch/tagseq_experiment#/concat_fastq/QC_beforetrim
+mv ./*qc*.* /path/to/file/tagseq_experiment#/concat_fastq/QC_beforetrim
+cd /path/to/file/tagseq_experiment#/concat_fastq/QC_beforetrim
 
 #To see a html version of each fastqc report use multiqc. This will create a mutilqc_.html. Download onto your local machine using scp and open it in a browser to view your QC metrics. 
 multiqc .
@@ -73,7 +73,7 @@ for a in *.gz; do gunzip $a; done
 #Trimming steps begin here. (1) Go to https://github.com/z0on/tag-based_RNAseq. Click on tagseq_trim_launch.pl and copy the code. Then paste the copied code into TextEdit on a Mac, Notepad++ on PC and save on your local computer as "tagseq_trim_launch.pl". The reason you need TextEdit is because it won't change characters like apoostrophes and will allow you to paste into nano. 
 
 #To create this code on the POD, go to your folder that has your unzipped/concatenated fastq files. 
-cd /stor/scratch/WCAAR/your_scratch/tagseq_experiment#/concat_fastq/
+cd /path/to/file/tagseq_experiment#/concat_fastq/
 nano tagseq_trim_launch.pl
 
 #Paste the copied code from your saved TextEdit file into the opened nano.
@@ -104,8 +104,8 @@ nohup ./clean &>trim.stats &
 
 #Move your trim files to a new directory to keep things clean 
 mkdir trim_files
-mv *.trim /stor/scratch/WCAAR/your_scratch/tagseq_experiment#/concat_fastq/trim_files
-cd /stor/scratch/WCAAR/your_scratch/tagseq_experiment#/concat_fastq/trim_files
+mv *.trim /path/to/file/tagseq_experiment#/concat_fastq/trim_files
+cd /path/to/file/tagseq_experiment#/concat_fastq/trim_files
 
 #QC
 for a in *.trim; do fastqc $a; done
@@ -152,22 +152,22 @@ cat ercc.gtf >> ERCC.gencode.vM28.chr_patch_hapl_scaff.annotation.gtf
 
 ########## STAR reference genome build ##########
 ## Make Star Genome
-### location /stor/home/user/references/
-STAR --runMode genomeGenerate --runThreadN 8 --genomeFastaFiles /stor/home/user/references/ERCC.GRCm39.genome.fa  --sjdbGTFfile /stor/home/user/references/ERCC.gencode.vM28.chr_patch_hapl_scaff.annotation.gtf --genomeDir /stor/home/user/references/Star_ERCC_Gencode_Mmv28/
+### location ~/references/
+STAR --runMode genomeGenerate --runThreadN 8 --genomeFastaFiles ~/references/ERCC.GRCm39.genome.fa  --sjdbGTFfile ~/references/ERCC.gencode.vM28.chr_patch_hapl_scaff.annotation.gtf --genomeDir ~/references/Star_ERCC_Gencode_Mmv28/
 
 ########## STAR mapping your samples ##########
-#You will need  to locate the pre-made STAR genome scaffold in the your references directory (/stor/home/user/references/)
+#You will need  to locate the pre-made STAR genome scaffold in the your references directory (~/references/)
 #Make a new folder called before running code for the trimmed STAR files
-cd /stor/scratch/WCAAR/your_scratch/tagseq_experiment#/concat_fastq/trim_files
+cd /path/to/file/tagseq_experiment#/concat_fastq/trim_files
 mkdir star_trim
 
 #STAR mapping
-for f in `ls -1 *.fastq.trim | sed 's/.fastq.trim//'`; do time STAR --runThreadN 20 --outSAMtype BAM SortedByCoordinate --outFileNamePrefix /stor/scratch/WCAAR/AnnaWarden_scratch/Nihal_practice_Tagseq/concat_fastq/fastq_trim/star_trim/Star_${f} --genomeDir /stor/home/wardena/references/Star_ERCC_Gencode_Mmv28/ --readFilesIn ${f}.fastq.trim; done
-cd /stor/scratch/WCAAR/your_scratch/tagseq_experiment#/concat_fastq/trim_files/star_trim
+for f in `ls -1 *.fastq.trim | sed 's/.fastq.trim//'`; do time STAR --runThreadN 20 --outSAMtype BAM SortedByCoordinate --outFileNamePrefix /path/to/fileconcat_fastq/fastq_trim/star_trim/Star_${f} --genomeDir ~/references/Star_ERCC_Gencode_Mmv28/ --readFilesIn ${f}.fastq.trim; done
+cd /path/to/file/tagseq_experiment#/concat_fastq/trim_files/star_trim
 
 
 ## Rat genome directory 
-/stor/home/wardena/references/Rat_7.2_ensembl_genome
+~/references/Rat_7.2_ensembl_genome
 
 ########## QC Step 2 ##########
 #Multiqc now 
@@ -181,13 +181,13 @@ for i in *bam; do samtools index $i; done
 ##if you have an error about loading HTseq environment (Script 'scripts/htseq-count' not found in metadata at '/usr/lib/python2.7/dist-packages/HTSeq-0.6.1p1.egg-info'). Solution I used was to create a conda environment with python 2.7. Then conda install -c bioconda htseq, updated in miniconda3.
 
 conda activate py2.7
-for i in `ls -1 *.bam | sed 's/.bam//'`; do htseq-count -m intersection-nonempty -s yes -f bam -r pos -t gene $i.bam /stor/home/wardena/references/Mus_musculus_ERCC_files/ERCC.gencode.vM28.chr_patch_hapl_scaff.annotation.gtf > $i.count.sorted.txt ;done
+for i in `ls -1 *.bam | sed 's/.bam//'`; do htseq-count -m intersection-nonempty -s yes -f bam -r pos -t gene $i.bam ~/references/Mus_musculus_ERCC_files/ERCC.gencode.vM28.chr_patch_hapl_scaff.annotation.gtf > $i.count.sorted.txt ;done
 
 ##Rat file
 ~/references/Rat_7.2_ensembl_genome/Rattus_norvegicus.mRatBN7.2.106.chr.gtf
 
 mkdir htseq_counts
-mv *.txt /stor/scratch/WCAAR/your_scratch/tagseq_experiment#/concat_fastq/trim_files/star_trim/htseq_counts
+mv *.txt /path/to/file/tagseq_experiment#/concat_fastq/trim_files/star_trim/htseq_counts
 cd htseq_counts
 
 ##Multiqc for htseq mapping 
@@ -224,11 +224,11 @@ pip install RSeQC
 #Got gtf2bed file from here https://github.com/ExpressionAnalysis/ea-utils/blob/master/clipper/gtf2bed
 nano gtf2bed.pl paste the perl script and use that for the making the bed file
 chmod +x gtf2bed.pl 
-perl gtf2bed /stor/home/user/references/ERCC.gencode.vM28.chr_patch_hapl_scaff.annotation.gtf > /stor/home/user/references/ERCC.gencode.vM28.chr_patch_hapl_scaff.annotation.bed ### All samples Rseqc
+perl gtf2bed ~/references/ERCC.gencode.vM28.chr_patch_hapl_scaff.annotation.gtf > ~/references/ERCC.gencode.vM28.chr_patch_hapl_scaff.annotation.bed ### All samples Rseqc
 
 #this perl script worked as of March 25th, 2022 on wcarcomp02. 
 
-for i in *.bam; do ~/miniconda3/bin/read_distribution.py -i $i -r /stor/home/wardena/references/Mus_musculus_ERCC_files/ERCC.gencode.vM28.chr_patch_hapl_scaff.annotation.bed > /stor/scratch/WCAAR/AnnaWarden_scratch/Nihal_practice_Tagseq/concat_fastq/trim_files/star_trim/Rseqc/$i.read_distribution.txt; done
+for i in *.bam; do ~/miniconda3/bin/read_distribution.py -i $i -r ~/references/Mus_musculus_ERCC_files/ERCC.gencode.vM28.chr_patch_hapl_scaff.annotation.bed > /path/to/file/concat_fastq/trim_files/star_trim/Rseqc/$i.read_distribution.txt; done
 
 
 ########## Downstream analysis ##########
