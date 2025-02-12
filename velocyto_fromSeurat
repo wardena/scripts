@@ -63,9 +63,9 @@ w18='/path/cell_ranger/loom_files/Control_13.loom'
 w19='/path/cell_ranger/loom_files/Control_16.loom'
 w20='/path/cell_ranger/loom_files/Control_18.loom'
 w21='/path/cell_ranger/loom_files/Control_19.loom'
-w22='//path/cell_ranger/loom_files/Control_20.loom'
+w22='/path/cell_ranger/loom_files/Control_20.loom'
 
-loompy.combine([w1,w2,w3,w4,w5,w6,w7,w8,w9,w10,w11,w12,w13,w14,w15,w16,w17,w18,w19,w20,w21,w22], output_file='merge_UT_samples.loom')
+loompy.combine([w1,w2,w3,w4,w5,w6,w7,w8,w9,w10,w11,w12,w13,w14,w15,w16,w17,w18,w19,w20,w21,w22], output_file='merge_samples.loom')
 
 Pacakges/versions used:
 numpy Version: 1.21.6
@@ -92,7 +92,7 @@ library(SeuratWrappers)
 library (pagoda2)
 library(sccore)
 
-ldat <- read.loom.matrices("merge_UT_samples.loom") 
+ldat <- read.loom.matrices("merge_samples.loom") 
 
 ###################################
 ## change names
